@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
 import { useEffect, useRef, useState } from "react";
 import { Animated, FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -47,10 +48,16 @@ export default function HomeScreen() {
     }
 
     try {
-      await Audio.requestPermissionsAsync();
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== "granted") {
+        alert("Microphone access is required to record. Please enable it in your device settings.");
+        return;
+      }
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
       });
 
       const { recording } = await Audio.Recording.createAsync(
@@ -72,37 +79,65 @@ export default function HomeScreen() {
   async function stopRecording() {
     if (!recording) return;
 
-    setRecordingDuration(0);
-    await recording.stopAndUnloadAsync(); // Re-enabled to properly stop recording
-    const uri = recording.getURI();
-    const audioBlob = await fetch(uri!).then(r => r.blob());
-    const reader = new FileReader();
-    reader.readAsDataURL(audioBlob);
-    const audioData: string = await new Promise(resolve => {
-      reader.onloadend = () => {
-        resolve(reader.result as string);
+    try {
+      const status = await recording.getStatusAsync();
+      const duration = Math.floor((status.durationMillis ?? 0) / 1000);
+
+      setRecordingDuration(0);
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+
+      if (!uri) {
+        alert("Recording failed: no audio file was saved.");
+        setRecording(null);
+        return;
+      }
+
+      let audioData: string;
+
+      if (uri.startsWith("file://")) {
+        // Native (iOS/Android): fetch(file://) often fails in React Native; use FileSystem
+        const base64 = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        audioData = `data:audio/mp4;base64,${base64}`;
+      } else {
+        // Web (blob URL) or other: use fetch + FileReader
+        const audioBlob = await fetch(uri).then((r) => r.blob());
+        audioData = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read audio"));
+          reader.readAsDataURL(audioBlob);
+        });
+      }
+
+      if (!audioData) {
+        alert("Recording failed: could not read audio data.");
+        setRecording(null);
+        return;
+      }
+
+      const newVoiceNote: VoiceNote = {
+        id: Date.now().toString(),
+        title: noteTitle,
+        audioData,
+        duration,
+        createdAt: new Date(),
+        isPlaying: false,
       };
-    });
-    const status = await recording.getStatusAsync();
-    const duration = Math.floor((status.durationMillis ?? 0) / 1000);
 
-    if (!audioData) return;
+      const updated = [newVoiceNote, ...voiceNotes];
+      setVoiceNotes(updated);
+      await saveVoiceNotes(updated);
 
-    const newVoiceNote: VoiceNote = {
-      id: Date.now().toString(),
-      title: noteTitle,
-      audioData,
-      duration,
-      createdAt: new Date(),
-      isPlaying: false,
-    };
-
-    const updated = [newVoiceNote, ...voiceNotes];
-    setVoiceNotes(updated);
-    await saveVoiceNotes(updated);
-
-    setRecording(null);
-    setNoteTitle("");
+      setRecording(null);
+      setNoteTitle("");
+    } catch (err) {
+      console.error("Failed to save recording", err);
+      alert("Failed to save recording. Please try again.");
+      setRecording(null);
+    }
   }
 
   // Play / Stop audio
