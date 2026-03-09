@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { VoiceNote } from "../type/audio";
 
-const STORAGE_KEY = "VOICE_NOTES";
+const STORAGE_KEY = "AUDIO_RECORDER_APP_VOICE_NOTES";
 
 export async function loadVoiceNotes(): Promise<VoiceNote[]> {
   const data = await AsyncStorage.getItem(STORAGE_KEY);
